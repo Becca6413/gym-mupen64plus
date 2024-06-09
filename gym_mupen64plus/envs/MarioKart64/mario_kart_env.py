@@ -24,10 +24,10 @@ class MarioKartEnv(Mupen64PlusEnv):
                                  (255, 000, 000): 3} #    Red: Lap 3
 
     DEFAULT_STEP_REWARD = -0.1
-    LAP_REWARD = 100
-    CHECKPOINT_REWARD = 0.5
-    BACKWARDS_PUNISHMENT = -1
-    END_REWARD = 1000
+    LAP_REWARD = 1600
+    CHECKPOINT_REWARD = 1
+    BACKWARDS_PUNISHMENT = -16
+    END_REWARD = 1
 
     END_EPISODE_THRESHOLD = 0
 
@@ -36,10 +36,15 @@ class MarioKartEnv(Mupen64PlusEnv):
 
     MAP_SERIES = 0
     MAP_CHOICE = 0
+    COUNT = 0;
 
-    ENABLE_CHECKPOINTS = False
+    ENABLE_CHECKPOINTS = True
 
     def __init__(self, character='mario', course='LuigiRaceway'):
+        MarioKartEnv.COUNT += 1;
+        self.terminate = False;
+        self.early = False;
+        self.count = 0;
         self._set_character(character)
         self._set_course(course)
         super(MarioKartEnv, self).__init__()
@@ -50,7 +55,16 @@ class MarioKartEnv(Mupen64PlusEnv):
                                                   [-80, 80],  # Joystick Y-axis
                                                   [  0,  1],  # A Button
                                                   [  0,  1],  # B Button
-                                                  [  0,  1]]) # RB Button
+                                                  [  0,  1],  # RB Button
+                                                  [  0,  1],  # LB Button
+                                                  [  0,  1]]) # Z Button
+
+
+    def getCount(self):
+        return self.count;
+
+    def getCOUNT(self):
+        return MarioKartEnv.COUNT;
 
     def _load_config(self):
         self.config.update(yaml.safe_load(open(os.path.join(os.path.dirname(inspect.stack()[0][1]), "mario_kart_config.yml"))))
@@ -64,7 +78,14 @@ class MarioKartEnv(Mupen64PlusEnv):
     def _step(self, action):
         # Interpret the action choice and get the actual controller state for this step
         controls = action + [  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0]
+        self.count += 1;
+        c = self._get_current_checkpoint();
+        del self.stuck[0];
+        self.stuck.append(c);
 
+        if c < self.stuck[0]:
+            self.early = True;
+        
         return super(MarioKartEnv, self)._step(controls)
 
     def _reset_after_race(self):
@@ -89,6 +110,11 @@ class MarioKartEnv(Mupen64PlusEnv):
         self.lap = 1
         self.step_count_at_lap = 0
         self.last_known_lap = -1
+        self.stuck = [-10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10, -10];
+        #324, 415
+        # r < 140
+        # g < 140
+        # b < 140
 
         self.CHECKPOINT_LOCATIONS = list(self._generate_checkpoints(64, 36, 584, 444)) 
         if self.ENABLE_CHECKPOINTS:
@@ -99,7 +125,10 @@ class MarioKartEnv(Mupen64PlusEnv):
         if self.reset_count > 0:
             # Make sure we don't skip frames while navigating the menus
             with self.controller_server.frame_skip_disabled():
-                if self.episode_over:
+                if self.early:
+                    self.early = False;
+                    self._reset_during_race()
+                elif self.episode_over:
                     self._reset_after_race()
                     self.episode_over = False
                 else:
@@ -116,6 +145,17 @@ class MarioKartEnv(Mupen64PlusEnv):
         if self.ENABLE_CHECKPOINTS:
             cur_ckpt = self._get_current_checkpoint()
 
+            if self.early:
+                reward_to_return -= 640;
+
+            color = IMAGE_HELPER.GetPixelColor(self.pixel_array, 324, 434);
+            if color[0] > 125 or color[1] > 125 or color[2] > 125:
+                reward_to_return -= 64;
+            else:
+                reward_to_return += 10;
+
+            reward_to_return += self.stuck[len(self.stuck)-1] - self.stuck[0];
+
         if self.episode_over:
             # Scale out the end reward based on the total steps to get here; the fewer steps, the higher the reward
             reward_to_return = 5 * (1250 - self.step_count) + self.END_REWARD #self.END_REWARD * (5000 / self.step_count) - 3000
@@ -123,6 +163,9 @@ class MarioKartEnv(Mupen64PlusEnv):
             if cur_lap > self.lap:
                 self.lap = cur_lap
                 cprint('Lap %s!' % self.lap, 'green')
+                
+                for i in range(len(self.stuck)):
+                    self.stuck[i] -= 1000;
 
                 # Scale out the lap reward based on the steps to get here; the fewer steps, the higher the reward
                 steps_this_lap = self.step_count - self.step_count_at_lap
@@ -137,7 +180,7 @@ class MarioKartEnv(Mupen64PlusEnv):
 
                 #cprint(str(self.step_count) + ': CHECKPOINT achieved!', 'green')
                 self._checkpoint_tracker[self.lap - 1][cur_ckpt] = True
-                reward_to_return = self.CHECKPOINT_REWARD # TODO: This should reward per progress made. It seems as though currently, by going too fast, you could end up skipping over some progress rewards, which would encourage driving around a bit to achieve those rewards. Should reward whatever progress was achieved during the step (perhaps multiple 'checkpoints')
+                reward_to_return += self.CHECKPOINT_REWARD # TODO: This should reward per progress made. It seems as though currently, by going too fast, you could end up skipping over some progress rewards, which would encourage driving around a bit to achieve those rewards. Should reward whatever progress was achieved during the step (perhaps multiple 'checkpoints')
 
             elif (self.ENABLE_CHECKPOINTS and ( cur_lap < self.last_known_lap or
                                                cur_ckpt < self.last_known_ckpt)):
@@ -145,7 +188,7 @@ class MarioKartEnv(Mupen64PlusEnv):
                 #cprint(str(self.step_count) + ': BACKWARDS!!', 'red')
                 self._checkpoint_tracker[self.lap - 1][self.last_known_ckpt] = False
                 reward_to_return = self.BACKWARDS_PUNISHMENT
-
+                self.terminate = True;
             else:
                 reward_to_return = self.DEFAULT_STEP_REWARD
 
@@ -247,6 +290,9 @@ class MarioKartEnv(Mupen64PlusEnv):
 
     def _evaluate_end_state(self):
         #cprint('Evaluate End State called!','yellow')
+        if self.early:
+            self.early = True;
+            return True;
         return self.end_race_pixel_color == IMAGE_HELPER.GetPixelColor(self.pixel_array, 203, 51)
 
     def _navigate_menu(self):
