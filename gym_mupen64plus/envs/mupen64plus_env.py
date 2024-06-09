@@ -133,6 +133,12 @@ class Mupen64PlusEnv(gym.Env):
     @abc.abstractmethod
     def _load_config(self):
         return
+        
+    def getCount(self):
+        return 0;
+
+    def getCOUNT(self):
+        return 0;
 
     def _base_validate_config(self):
         if 'ROM_NAME' not in self.config:
